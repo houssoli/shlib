@@ -2,26 +2,27 @@
 
 # Notifications
 
-post_to_slack() {
+post_slack_msg() {
   # Sends notifications via Slack
-  local _msg=${2:-$1}
 
-  if [ $# -eq 2 ]
-  then
-    local _slack_channel="""\"channel\":  \"#${1}\","""
-  else
-    local _slack_channel=
+  # Optionally define slack_channel and/or slack_webhook_url in this config file
+  local slack_channel=
+  . ~/.post_slack_msg.conf >/dev/null 2>$1
+  . post_slack_msg.conf >/dev/null 2>$1
+  # allow for globally defined slack_webhook_url env variable
+  local slack_webhook_url=${SLACK_WEBHOOK_URL:-$slack_webhook_url}
+
+  local msg=${2:-$1}
+  if [ $# -eq 2 ]; then
+    slack_channel="""\"channel\":  \"#${1}\","""
   fi
-  echo $_slack_channel
-
   curl --silent -X POST \
     --output /dev/null \
-    --data-urlencode \
-    "payload={${_slack_channel} \"text\": \"${_msg}\"}" \
-    ${SLACK_URL}
+    --data-urlencode "payload={${slack_channel} \"text\": \"${msg}\"}" \
+    ${slack_webhook_url}
 }
 
-post_to_pushover() {
+post_pushover_msg() {
   # Sends notifications via Pushover
   # Requires a file named 'pushover.conf' be placed in project directory'
   # Usage: pushover "Title Goes Here" "Message Goes Here"
