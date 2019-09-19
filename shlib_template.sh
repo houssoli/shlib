@@ -41,7 +41,7 @@ _parse_options() {
   while _is_option ${1:-}; do
     case $1 in
       -h|--help) _usage; exit 0;;
-      -V|--version) _usage; exit 0;;
+      -V|--version) _version; exit 0;;
       -v|--verbose)
         if [ -z "${2#?}" ]; then shift
           # will throw an error if not a single digit number
@@ -60,7 +60,7 @@ _parse_options() {
         read __password; stty echo; echo ;;
 
       # misc
-      --m|--markdown) TO_MARKDOWN=true;;
+      --m|--markdown) MARKDOWN_OUTPUT=true;;
 
       --) shift; break;;
       *) die "Invalid option: '$1'";;

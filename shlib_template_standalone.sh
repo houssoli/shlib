@@ -27,18 +27,17 @@ set -o errexit
 
 # Any trap on ERR is inherited by any functions or subshells. Available on bash
 # only.
-[ -n "${BASH_VERSION}" ] && set -o errtrace || true
+[ -n "${BASH_VERSION:-}" ] && set -o errtrace || true
 
 # Return value of a pipeline is the one of right most cmd with non-zero exit
-# code.  Available on bash only.
-[ -n "${BASH_VERSION}" ] && set -o pipefail
+# code. Available on bash only.
+[ -n "${BASH_VERSION:-}" ] && set -o pipefail
 
 # Errors on unset variables and parameters. Same as '-u'. Use '${VAR:-}'.
-#   - feat: exportable 'main' by the name of $0 in bash
 set -o nounset
 
 # mac osx path handling
-if [ "${OSTYPE:-}" = darwin* ]; then
+if [ "${OSTYPE:-}" = "darwin*" ]; then
   alias date=/usr/bin/date
   alias readlink=/usr/bin/readlink
 else
@@ -197,23 +196,101 @@ is_defined() {
   fi
 }
 
+tmux_run_in_pane() {
+  # send command to pane (e.g.: run a command inside a running interactive shell)
+  # INPUT: '<session-name>:<pane-name>'
+  local target_pane=${1}; shift
+  local session_name=${target_pane%%:*}
+  local pane_name=${target_pane##*:}
+  if ! tmux has-session -t "${session_name}"; then
+    tmux new-session -t "${session_name}"
+  fi
+  tmux send-keys -t ${target_pane} "$*" C-m
+}
+
+post_slack_msg() {
+  # Sends notifications via Slack
+  #  usage: post_slack_msg [ <slack_channel> ] <slack_msg>
+
+  # Optionally define slack_channel and/or slack_webhook_url in a config file
+  local slack_channel=
+
+  . ~/.post_slack_msg.conf >/dev/null 2>&1 || true
+  . post_slack_msg.conf >/dev/null 2>&1 || true
+
+  # channel passed as env variable precedes what is in config file
+  slack_channel="""\"channel\": \"#${slack_channel:-$SLACK_CHANNEL}\","""
+  # channel passed as positional arg precedes env variable
+  if [ $# -ge 2 ]; then
+    slack_channel="""\"channel\": \"#${1}\","""
+    shift
+  fi
+  # slack webhook url passed as env variable precedes what is in config file
+  SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL:-$slack_webhook_url}
+  curl --silent -X POST \
+    --output /dev/null \
+    --data-urlencode "payload={${slack_channel} \"text\": \"$@\"}" \
+    ${SLACK_WEBHOOK_URL}
+}
+
+function timeit {
+  # usage: timeit [ --output FILE ] cmd
+  # -o|--output Write the resource use statistics to FILE instead of to the
+  #             standard error stream
+  # Format options:
+  #   E   Elapsed real (wall clock) time used by the process, in
+  #         [hours:]minutes:seconds.
+  #   U   Total number of CPU-seconds that the process used directly (in
+  #         user mode), in seconds.
+  #   S   Total number of CPU-seconds used by the system on behalf of the
+  #         process (in kernel mode), in seconds.
+  /usr/bin/time --format "\t%E real,\t%U user,\t%S sys" $@
+}
+
 run() {
-  # Wrapper around command execution to allow dry-run mode and/or mardown
-  # output to stdout.
+  # Wrapper around command execution to allow
+  #   dry-run mode, mardown output | post msg to third party
+  # type debug >/dev/null 2>&1 && debug "Executing command '$*'" || :
   if [ -z "${DRY_RUN:-}" ]; then
-    if [ -z "${MARKDOWN:-}" ]; then
-      debug "$*"
+    if [ -z "${MARKDOWN_OUTPUT:-}" ]; then
+
+      # post some msg
+      if [ -n "${POST_SLACK_MSG:-}" ]; then
+        if type post_slack_msg >/dev/null 2>&1; then
+          post_slack_msg "$(hostnamectl --static): Executing command \`$*\`"
+        else
+          debug "post_slack_msg not found"
+        fi
+      fi
+
+      # run cmd
+      type info >/dev/null 2>&1 && info "Executing command '$*'" || :
       $*
+      type info >/dev/null 2>&1 && info "Command '$*' completed!" || :
+
+      # post some msg
+      if [ -n "${POST_SLACK_MSG:-}" ]; then
+        if type post_slack_msg >/dev/null 2>&1; then
+          post_slack_msg "$(hostnamectl --static): command \`$*\` completed!"
+        else
+          debug "post_slack_msg not found"
+        fi
+      fi
+
     else
+      # run cmd; output cmd and its output in markdown format
       echo -e "```"; echo "$@"; $*;  echo -e "```\n"
     fi
   else
-    if [ -z "${MARKDOWN:-}" ]; then
+    # dry-run
+    if [ -z "${MARKDOWN_OUTPUT:-}" ]; then
       echo "$*"
     else
-      echo -e "```"; echo "$@"; echo -e "```\n"
+    # dry-run; output cmd only in markdown format
+      echo -e '```'; echo "$@"; echo -e '```\n'
     fi
   fi
+  # type debug >/dev/null 2>&1 && debug "Command '$*' completed" || :
 }
 
 _version() { echo "${__version__:-No version string available}" 1>&2; }
@@ -222,15 +299,15 @@ _usage() { echo "${__doc__:-No usage available}" 1>&2; }
 _hook_pre_exec() {
   ### Runtime
   #############################################################################
-  info "script '__name__ ': ${__name__:-}"
-  info "script '__file__': ${__file__:-}"
-  info "script '__path__': ${__path__:-}"
-  info "script '__version__': ${__version__:-}"
-  debug "'VERBOSE': ${VERBOSE}"
-  debug "'DEBUG': ${DEBUG}"
-  debug "'DRY_RUN': ${DRY_RUN:-}"
-  debug "'FORCE': ${FORCE:-}"
-  debug "'QUIET': ${QUIET:-}"
+  info "script '__name__ ': '${__name__:-}'"
+  info "script '__file__': '${__file__:-}'"
+  info "script '__path__': '${__path__:-}'"
+  info "script '__version__': '${__version__:-}'"
+  debug "'VERBOSE': '${VERBOSE}'"
+  debug "'DEBUG': '${DEBUG}'"
+  debug "'DRY_RUN': '${DRY_RUN:-}'"
+  debug "'FORCE': '${FORCE:-}'"
+  debug "'QUIET': '${QUIET:-}'"
 }
 
 # From this point below put your business value adding code.
@@ -273,7 +350,7 @@ _parse_options() {
   while _is_option ${1:-}; do
     case $1 in
       -h|--help) _usage; exit 0;;
-      -V|--version) _usage; exit 0;;
+      -V|--version) _version; exit 0;;
       -v|--verbose)
         if [ -z "${2#?}" ]; then shift
           # will throw an error if not a single digit number
@@ -292,7 +369,7 @@ _parse_options() {
         read __password; stty echo; echo ;;
 
       # misc
-      --m|--markdown) TO_MARKDOWN=true;;
+      --m|--markdown) MARKDOWN_OUTPUT=true;;
 
       --) shift; break;;
       *) die "Invalid option: '$1'";;
